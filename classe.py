@@ -5,7 +5,7 @@ Ce module ajoute les adresses /_classe/... :
 
   Eleves (depuis la salle, avec le code affiche par l'enseignant) :
     GET  /_classe/info        seance en cours ? (titre, classe ; jamais le code)
-    POST /_classe/rejoindre   {code} -> la seance (exercices, groupes)
+    POST /_classe/rejoindre   {code} -> la seance (exercices, groupes) ; en evaluation, SANS solutions ni indices
     POST /_classe/envoyer     {code, rendu, final} -> enregistre le travail (envoi automatique toutes les
                               20 s, et « Rendre mon travail » avec final = true)
 
@@ -15,6 +15,8 @@ Ce module ajoute les adresses /_classe/... :
     GET  /_classe/etat        eleves connectes, exercice en cours, statuts, rendu final
     GET  /_classe/rendu?cle=  travail complet d'un groupe (blocs, Python)
     POST /_classe/dossier     ouvre le dossier des travaux dans l'Explorateur
+
+En evaluation, la banque d'exercices (/exercices.json, avec ses solutions) n'est plus servie aux postes eleves.
 
 Les travaux sont ecrits dans Documents\\MicrobitBlockly\\travaux\\<date>_<classe>_<titre>\\, un fichier
 « .rendu.json » par groupe d'eleves (le meme format que les fichiers rendus par l'ENT, seances.js), remplace a
@@ -109,13 +111,24 @@ def _code_ok(code):
     return ETAT["actif"] and str(code or "").strip().upper() == ETAT["code"]
 
 
+def seance_pour_eleves(seance):
+    """La seance telle que la recoivent les postes eleves. En evaluation : ni solution ni indices. Le moteur d'exercices
+    n'en a pas besoin (validation par la regle de l'exercice, ou correction par l'enseignant), et un eleve pourrait les
+    lire avec les outils du navigateur. Le PC du professeur garde la seance complete (seance.json du dossier des travaux)."""
+    if seance.get("mode") != "eval":
+        return seance
+    copie = dict(seance)
+    copie["exercices"] = [{k: v for k, v in e.items() if k not in ("solution", "indices")} for e in seance.get("exercices", [])]
+    return copie
+
+
 def rejoindre(donnees):
     with _verrou:
         if not ETAT["actif"]:
             raise PermissionError("aucune séance en cours")
         if not _code_ok(donnees.get("code")):
             raise PermissionError("code incorrect")
-        return {"seance": ETAT["seance"], "code": ETAT["code"]}
+        return {"seance": seance_pour_eleves(ETAT["seance"]), "code": ETAT["code"]}
 
 
 def envoyer(donnees):
@@ -248,6 +261,22 @@ def traiter(handler, methode):
         _repondre(handler, 400, {"erreur": str(e)})
     except OSError as e:
         _repondre(handler, 500, {"erreur": "écriture impossible : " + str(e)})
+    return True
+
+
+FICHIERS_AVEC_SOLUTIONS = {"/exercices.json"}
+
+
+def fichier_refuse(handler):
+    """Pendant une evaluation diffusee, la banque d'exercices (et ses solutions) n'est servie qu'au PC du professeur.
+    Renvoie True si la requete a ete refusee (reponse deja envoyee)."""
+    if urllib.parse.urlparse(handler.path).path not in FICHIERS_AVEC_SOLUTIONS or _depuis_ce_pc(handler):
+        return False
+    with _verrou:
+        evaluation = ETAT["actif"] and (ETAT["seance"] or {}).get("mode") == "eval"
+    if not evaluation:
+        return False
+    _repondre(handler, 403, {"erreur": "indisponible pendant une évaluation"})
     return True
 
 

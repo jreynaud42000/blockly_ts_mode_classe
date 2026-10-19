@@ -27,6 +27,16 @@
 //     code, groupe, prenom(s) ; son travail est envoye au PC de l'enseignant toutes les 20 secondes, et
 //     « Rendre mon travail » l'envoie comme rendu definitif (fichier telecharge si le reseau ne repond pas).
 // Le mode classe n'existe qu'avec app.py ou l'exe : sur le site statique, il est absent et rien ne change.
+//
+// ESPACE ENSEIGNANT PROTEGE (oct. 2026) :
+//   - poste eleve (page servie par le PC du professeur et ouverte depuis un autre poste) : le bouton « Espace enseignant »
+//     est masque et la fenetre refuse de s'ouvrir ; les fonctions du professeur sont de toute facon refusees par le
+//     serveur (127.0.0.1 seulement) ;
+//   - en evaluation, la seance envoyee aux eleves n'a ni solutions ni indices, et la banque exercices.json ne leur est
+//     plus servie (classe.py) ;
+//   - code enseignant a 4 chiffres, facultatif, pour ce navigateur (« 🔒 Code… » dans l'Espace enseignant) : demande a
+//     l'ouverture, valable 30 minutes, 5 essais puis 1 minute d'attente ; seule son empreinte SHA-256 est gardee
+//     (localStorage). Protection legere : elle evite les ouvertures par curiosite sur le PC du professeur.
 
 const CLE_ACTIVE = 'seance_active_v1';
 const CLE_BROUILLON = 'seance_brouillon_v1';
@@ -261,10 +271,122 @@ function regleDepuisEspace() {
     return regles.length ? { tous: regles } : null;
 }
 
+// ---------------------------------------------------------------- ENSEIGNANT : poste eleve et code a 4 chiffres
+// Poste eleve = page servie par un PC en mode classe (app.py repond a /_classe/info) et ouverte depuis un autre poste.
+// Sur le site statique (solution 1), l'Espace enseignant reste disponible : c'est la qu'on prepare les fichiers de seance.
+let posteEleve = false;
+async function estPosteEleve() {
+    if (SUR_CE_PC) return false;
+    return (await infoClasse()) !== null;
+}
+
+const CLE_CODE_PROF = 'code_enseignant_v1';            // empreinte SHA-256 du code (jamais le code lui-meme)
+const CLE_CODE_OUVERT = 'code_enseignant_ouvert_v1';   // sessionStorage : heure du deverrouillage
+const DUREE_DEVERROUILLAGE_MS = 30 * 60 * 1000;
+const ESSAIS_CODE = 5, ATTENTE_CODE_MS = 60 * 1000;
+const lireStock = (stock, cle) => { try { return stock.getItem(cle); } catch (e) { return null; } };
+const ecrireStock = (stock, cle, valeur) => { try { if (valeur === null) stock.removeItem(cle); else stock.setItem(cle, valeur); } catch (e) { /* stockage indisponible */ } };
+async function empreinteCode(code) {
+    const octets = new TextEncoder().encode('microbit-blockly|enseignant|' + code);
+    if (window.crypto && crypto.subtle) {
+        const h = new Uint8Array(await crypto.subtle.digest('SHA-256', octets));
+        return Array.from(h).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    let h = 5381; for (const b of octets) h = ((h * 33) ^ b) >>> 0;      // page hors contexte securise (pas de crypto.subtle)
+    return 'djb2-' + h.toString(16);
+}
+const codeDefini = () => !!lireStock(localStorage, CLE_CODE_PROF);
+const codeOuvert = () => { const t = Number(lireStock(sessionStorage, CLE_CODE_OUVERT)); return !!t && Date.now() - t < DUREE_DEVERROUILLAGE_MS; };
+let essaisRates = 0, attenteJusqua = 0;
+const AIDE_CODE_OUBLIE = 'Le code est enregistré dans ce navigateur seulement. Pour le supprimer, effacez les données de ce site dans ' +
+    'les paramètres du navigateur (Confidentialité > Cookies et données des sites) : la séance en préparation est alors effacée aussi.';
+
+function demanderCode() {
+    return new Promise(fin => {
+        const v = voile('<div class="ex-haut"><h2>🔒 Espace enseignant</h2><button class="ex-x" data-f="fermer" title="Fermer">✕</button></div>' +
+            '<label class="se-libre">Code enseignant (4 chiffres) <input id="se-code-prof" type="password" inputmode="numeric" maxlength="4" ' +
+            'autocomplete="off" style="font-size:22px;letter-spacing:6px;width:6em"></label>' +
+            '<p class="se-erreur" id="se-erreur" role="alert"></p>' +
+            '<div class="ex-boutons"><button class="ex-primaire" data-a="ouvrir">Ouvrir</button><button data-f="fermer">Annuler</button></div>' +
+            '<p class="ex-note"><a href="#" data-a="oubli">Code oublié ?</a></p>');
+        const champ = $('#se-code-prof', v), erreur = $('#se-erreur', v);
+        let repondu = false;
+        const terminer = ok => { if (repondu) return; repondu = true; fermer(); fin(ok); };
+        champ.focus();
+        const valider = async () => {
+            if (Date.now() < attenteJusqua) { erreur.textContent = 'Trop d\'essais : attendez ' + Math.ceil((attenteJusqua - Date.now()) / 1000) + ' s.'; return; }
+            if ((await empreinteCode(champ.value.trim())) === lireStock(localStorage, CLE_CODE_PROF)) {
+                essaisRates = 0;
+                ecrireStock(sessionStorage, CLE_CODE_OUVERT, String(Date.now()));
+                terminer(true);
+                return;
+            }
+            essaisRates++;
+            champ.value = '';
+            if (essaisRates >= ESSAIS_CODE) { essaisRates = 0; attenteJusqua = Date.now() + ATTENTE_CODE_MS; erreur.textContent = 'Code incorrect. Trop d\'essais : attendez 1 minute.'; }
+            else erreur.textContent = 'Code incorrect (' + (ESSAIS_CODE - essaisRates) + ' essai' + (ESSAIS_CODE - essaisRates > 1 ? 's' : '') + ' restant' + (ESSAIS_CODE - essaisRates > 1 ? 's' : '') + ').';
+        };
+        champ.addEventListener('keydown', ev => { if (ev.key === 'Enter') valider(); });
+        champ.addEventListener('input', () => { erreur.textContent = ''; champ.value = champ.value.replace(/\D/g, ''); });
+        v.addEventListener('click', ev => {
+            if (ev.target.closest('[data-f="fermer"]')) terminer(false);
+            else if (ev.target.closest('[data-a="ouvrir"]')) valider();
+            else if (ev.target.closest('[data-a="oubli"]')) { ev.preventDefault(); erreur.textContent = AIDE_CODE_OUBLIE; }
+        });
+        v.addEventListener('mousedown', ev => { if (ev.target === v) terminer(false); });
+    });
+}
+async function deverrouillerEspace() {
+    if (!codeDefini() || codeOuvert()) return true;
+    return demanderCode();
+}
+
+// Definir, changer ou supprimer le code (depuis l'Espace enseignant, donc deja deverrouille).
+function fenetreCodeProf(retour) {
+    const defini = codeDefini();
+    const v = voile('<div class="ex-haut"><h2>🔒 Code enseignant</h2><button class="ex-x" data-f="fermer" title="Fermer">✕</button></div>' +
+        '<p>' + (defini ? 'Un code protège l\'Espace enseignant dans ce navigateur. Il est demandé à l\'ouverture, puis reste valable 30 minutes.'
+            : 'Aucun code : l\'Espace enseignant s\'ouvre sans rien demander dans ce navigateur.') + '</p>' +
+        '<div class="se-form"><label>' + (defini ? 'Nouveau code' : 'Code') + ' (4 chiffres) <input id="se-code-1" type="password" inputmode="numeric" maxlength="4" autocomplete="off"></label>' +
+        '<label>Confirmer <input id="se-code-2" type="password" inputmode="numeric" maxlength="4" autocomplete="off"></label></div>' +
+        '<p class="se-erreur" id="se-erreur" role="alert"></p>' +
+        '<div class="ex-boutons"><button class="ex-primaire" data-a="enregistrer">Enregistrer le code</button>' +
+        (defini ? '<button class="ex-danger" data-a="supprimer">Supprimer le code</button>' : '') + '<button data-a="retour">Retour</button></div>' +
+        '<p class="ex-note">Protection légère : elle évite qu\'un élève ouvre l\'Espace enseignant par curiosité sur votre PC. Elle ne remplace pas ' +
+        'le verrouillage de votre session Windows. Les postes des élèves (mode classe) n\'ont de toute façon pas accès à l\'Espace enseignant. ' +
+        AIDE_CODE_OUBLIE + '</p>');
+    $('#se-code-1', v).focus();
+    v.addEventListener('input', ev => { if (ev.target.tagName === 'INPUT') ev.target.value = ev.target.value.replace(/\D/g, ''); $('#se-erreur', v).textContent = ''; });
+    v.addEventListener('click', async ev => {
+        if (ev.target.closest('[data-f="fermer"]')) { fermer(); return; }
+        const a = ev.target.closest('[data-a]');
+        if (!a) return;
+        if (a.dataset.a === 'retour') { retour(); return; }
+        if (a.dataset.a === 'supprimer') {
+            if (!confirm('Supprimer le code enseignant ? L\'Espace enseignant s\'ouvrira sans rien demander.')) return;
+            ecrireStock(localStorage, CLE_CODE_PROF, null);
+            retour();
+            return;
+        }
+        const c1 = $('#se-code-1', v).value, c2 = $('#se-code-2', v).value;
+        if (!/^\d{4}$/.test(c1)) { $('#se-erreur', v).textContent = 'Le code doit faire exactement 4 chiffres.'; return; }
+        if (c1 !== c2) { $('#se-erreur', v).textContent = 'Les deux codes ne sont pas identiques.'; return; }
+        ecrireStock(localStorage, CLE_CODE_PROF, await empreinteCode(c1));
+        ecrireStock(sessionStorage, CLE_CODE_OUVERT, String(Date.now()));
+        alert('Code enregistré. Il sera demandé à la prochaine ouverture de l\'Espace enseignant (après 30 minutes, ou dans un nouvel onglet).');
+        retour();
+    });
+}
+
 async function fenetreEnseignant(onglet = 'creer') {
+    if (posteEleve || await estPosteEleve()) { alert('L\'Espace enseignant n\'est disponible que sur le poste du professeur.'); return; }
     if (moteur().active()) { alert('Une séance d\'élève est ouverte sur ce poste : quittez-la d\'abord (Fichier > Quitter la séance).'); return; }
+    if (!(await deverrouillerEspace())) return;
     const avecClasse = SUR_CE_PC && (await infoClasse()) !== null;
-    const v = voile('<div class="ex-haut"><h2>👩‍🏫 Espace enseignant</h2><button class="ex-x" data-f="fermer" title="Fermer">✕</button></div>' +
+    const v = voile('<div class="ex-haut"><h2>👩‍🏫 Espace enseignant</h2>' +
+        '<span class="se-haut-boutons"><button class="se-petit" data-f="code" title="Protéger l\'Espace enseignant par un code à 4 chiffres">🔒 Code…</button>' +
+        (codeDefini() ? '<button class="se-petit" data-f="verrouiller" title="Fermer et redemander le code à la prochaine ouverture">Verrouiller</button>' : '') +
+        '<button class="ex-x" data-f="fermer" title="Fermer">✕</button></span></div>' +
         '<div class="ex-onglets"><button data-onglet="creer">Préparer une séance</button><button data-onglet="ramasser">Ramasser les travaux</button>' +
         (avecClasse ? '<button data-onglet="classe">🏫 Mode classe</button>' : '') + '</div>' +
         '<div id="se-contenu"></div>', 'se-fenetre');
@@ -281,6 +403,8 @@ async function fenetreEnseignant(onglet = 'creer') {
         const o = ev.target.closest('[data-onglet]');
         if (o) { montrer(o.dataset.onglet); return; }
         if (ev.target.closest('[data-f="fermer"]')) { fermer(); return; }
+        if (ev.target.closest('[data-f="code"]')) { clearInterval(suiviClasse); suiviClasse = null; fenetreCodeProf(() => fenetreEnseignant(courant)); return; }
+        if (ev.target.closest('[data-f="verrouiller"]')) { ecrireStock(sessionStorage, CLE_CODE_OUVERT, null); clearInterval(suiviClasse); suiviClasse = null; fermer(); return; }
         const a = ev.target.closest('[data-a]');
         if (!a) return;
         if (courant === 'creer') await actionCreer(a, v, () => montrer('creer'));
@@ -684,6 +808,10 @@ async function verifierClasse() {
     const bouton = $('#seance-rejoindre-btn');
     if (SUR_CE_PC) { if (bouton) bouton.hidden = true; return; }
     const info = await infoClasse();
+    // Poste eleve en mode classe : pas d'Espace enseignant (voir estPosteEleve).
+    posteEleve = info !== null;
+    const prof = $('#seance-enseignant-btn');
+    if (prof) prof.hidden = posteEleve;
     const diffusee = !!(info && info.actif);
     if (bouton) bouton.hidden = !diffusee;
     if (diffusee && !moteur().active()) rejoindreClasse();
@@ -692,6 +820,7 @@ async function verifierClasse() {
 const style = document.createElement('style');
 style.textContent = `
 .se-fenetre { width: min(1000px, 100%); }
+.se-haut-boutons { display: flex; align-items: center; gap: 6px; }
 .se-form { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: end; margin: 10px 0; }
 .se-form label, .se-libre { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
 .se-libre { margin: 8px 0; }
@@ -736,5 +865,5 @@ function brancher() {
 }
 brancher();
 
-window.seancesTest = { construireSeance, envoyerAuProf, rejoindreClasse, infoClasse, SUR_CE_PC, lireGroupes, regleDepuisEspace, demarrerSeance, ajouterRendus, csvRendus, nomRendu, fenetreEnseignant,
+window.seancesTest = { estPosteEleve, deverrouillerEspace, empreinteCode, codeDefini, codeOuvert, fenetreCodeProf, posteEleve: () => posteEleve, construireSeance, envoyerAuProf, rejoindreClasse, infoClasse, SUR_CE_PC, lireGroupes, regleDepuisEspace, demarrerSeance, ajouterRendus, csvRendus, nomRendu, fenetreEnseignant,
                        rendus: () => rendus, brouillon: () => brouillon, htmlRamasser };

@@ -3450,4 +3450,11 @@ une salle qui charge la page en même temps déborde et Windows coupe des connex
 fichiers en CRLF ; avec `core.autocrlf false` ensuite, Git les voit tous modifiés. Régler `core.autocrlf false` puis
 `git rm -r --cached . && git reset --hard`.
 
+**Espace enseignant protégé** : `posteEleve` (page servie par un PC en mode classe, `/_classe/info` répond, et ouverte
+hors localhost) masque `#seance-enseignant-btn` et fait refuser `fenetreEnseignant`. En évaluation,
+`classe.seance_pour_eleves` retire `solution` et `indices` de la séance envoyée par `/_classe/rejoindre`, et
+`classe.fichier_refuse` (appelé dans `do_GET` d'app.py) répond 403 à `/exercices.json` pour les postes élèves. Code
+enseignant facultatif : empreinte SHA-256 (`crypto.subtle`, repli djb2 hors contexte sécurisé) dans `code_enseignant_v1`,
+déverrouillage 30 min dans `sessionStorage`, 5 essais puis 60 s d'attente.
+
 Fournis le code complet des fichiers du §1 (et les modules des §22 à §30), prêt à être posé dans un dossier.

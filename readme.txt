@@ -1599,3 +1599,17 @@ SECURITE ET RESEAU
 - Une trentaine de postes chargent chacun environ 5 Mo au demarrage (Blockly, Brython) : quelques secondes sur le reseau
   de la salle. MediaPipe (27 Mo) ne se charge que si l'eleve utilise l'apprentissage immediat.
 A verifier en classe : le pare-feu et le reseau de l'etablissement, et la charge avec 30 postes reels.
+
+ESPACE ENSEIGNANT PROTEGE (oct. 2026)
+- Postes eleves (page ouverte par l'adresse du PC du professeur) : le bouton « Espace enseignant » est masque et la
+  fenetre refuse de s'ouvrir. Les fonctions du professeur restaient deja refusees par le serveur (127.0.0.1 seulement).
+  Sur le site statique (solution 1) et sur le PC du professeur, rien ne change.
+- Evaluation diffusee : la seance envoyee aux eleves n'a ni solutions ni indices (le moteur n'en a pas besoin en
+  evaluation), et la banque exercices.json (avec ses solutions) n'est plus servie aux postes eleves tant que
+  l'evaluation dure. Le PC du professeur garde la seance complete (seance.json du dossier des travaux).
+  Entrainement : solutions et indices restent envoyes (« Voir la solution »).
+- Code enseignant facultatif (4 chiffres) : Espace enseignant > « 🔒 Code… » pour le definir, le changer ou le supprimer ;
+  « Verrouiller » ferme et redemande le code. Il est demande a l'ouverture, valable 30 minutes (et pour l'onglet), 5 essais
+  puis 1 minute d'attente. Seule son empreinte SHA-256 est gardee, dans ce navigateur. Code oublie : effacer les donnees
+  du site dans les parametres du navigateur (la seance en preparation est effacee aussi). Protection legere : elle evite
+  les ouvertures par curiosite sur le PC du professeur ; elle ne remplace pas le verrouillage de la session Windows.

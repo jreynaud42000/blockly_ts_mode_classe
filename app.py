@@ -157,7 +157,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return False
 
     def do_GET(self):
-        if not self._traiter_interne() and not classe.traiter(self, "GET"):
+        # classe.fichier_refuse : pas de banque d'exercices (solutions) pour les postes eleves pendant une evaluation.
+        if not self._traiter_interne() and not classe.traiter(self, "GET") and not classe.fichier_refuse(self):
             super().do_GET()
 
     def do_POST(self):
