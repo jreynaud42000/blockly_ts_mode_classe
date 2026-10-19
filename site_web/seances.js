@@ -18,6 +18,15 @@
 //   rendu  : { format: 'rendu-microbit', version: 1, date, seance: { id, titre, classe, mode }, groupe, eleves,
 //              exercices: [{ id, titre, statut, etoiles, ..., blocs, python }], evaluation }   (exercices.js)
 // Donnees personnelles : prenoms (ou initiales) seulement ; rien n'est envoye nulle part par l'application.
+//
+// MODE CLASSE (solution 2, classe.py) : le PC de l'enseignant sert la seance aux eleves de la salle.
+//   - Enseignant (sur son PC, Espace enseignant > Mode classe) : demarre la diffusion d'une seance ; l'application
+//     affiche l'adresse a ouvrir (http://<adresse du PC>:8000), un code de 5 caracteres et un QR code, puis suit les
+//     eleves en direct (connectes, exercices, rendus) ; les travaux arrivent dans Documents\MicrobitBlockly\travaux.
+//   - Eleve (sur un autre poste de la salle) : « Rejoindre la seance de la classe » (propose tout seul a l'ouverture),
+//     code, groupe, prenom(s) ; son travail est envoye au PC de l'enseignant toutes les 20 secondes, et
+//     « Rendre mon travail » l'envoie comme rendu definitif (fichier telecharge si le reseau ne repond pas).
+// Le mode classe n'existe qu'avec app.py ou l'exe : sur le site statique, il est absent et rien ne change.
 
 const CLE_ACTIVE = 'seance_active_v1';
 const CLE_BROUILLON = 'seance_brouillon_v1';
@@ -56,6 +65,24 @@ function voile(contenu, classe = '') {
     document.body.appendChild(v);
     return v;
 }
+// Mode classe : le poste de l'enseignant est celui qui sert l'application (localhost). « ?eleve » force la vue eleve
+// sur ce poste (essai par l'enseignant lui-meme).
+const SUR_CE_PC = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) && !new URLSearchParams(location.search).has('eleve');
+const ENVOI_AUTO_MS = 20000;
+let classeActive = null;        // { code } quand la seance vient du mode classe
+let minuteurEnvoi = null;
+async function appelClasse(chemin, corps) {
+    const r = await fetch(chemin, { method: corps === undefined ? 'GET' : 'POST', cache: 'no-store',
+        headers: corps === undefined ? {} : { 'Content-Type': 'application/json' }, body: corps === undefined ? undefined : JSON.stringify(corps) });
+    let d = {};
+    try { d = await r.json(); } catch (e) { /* pas de JSON */ }
+    if (!r.ok) throw new Error(d.erreur || ('erreur ' + r.status));
+    return d;
+}
+// null : pas de mode classe (site statique, ancien serveur) ; sinon { actif, titre, classe, mode }.
+async function infoClasse() {
+    try { const r = await fetch('/_classe/info', { cache: 'no-store' }); return r.ok ? await r.json() : null; } catch (e) { return null; }
+}
 const espaceVierge = () => !window.workspace.getAllBlocks(false).some(b => !['au_demarrage', 'boucle_infinie'].includes(b.type));
 
 // ---------------------------------------------------------------- ELEVE : ouvrir une seance, rendre, quitter
@@ -72,7 +99,7 @@ async function ouvrirSeance() {
     choisirEleves(def);
 }
 
-function choisirEleves(def) {
+function choisirEleves(def, classe = null) {
     const groupes = (def.groupes && def.groupes.length) ? def.groupes : [{ nom: 'Groupe', eleves: [] }];
     const v = voile('<div class="ex-haut"><h2>📂 ' + esc(def.titre) + '</h2><button class="ex-x" data-f="fermer" title="Fermer">✕</button></div>' +
         '<p>' + esc(def.classe ? def.classe + ' · ' : '') + def.exercices.length + ' exercice' + (def.exercices.length > 1 ? 's' : '') +
@@ -99,16 +126,61 @@ function choisirEleves(def) {
             .concat($('#se-autres', v).value.split(',').map(t => t.trim()).filter(Boolean));
         if (!eleves.length) { $('#se-erreur', v).textContent = 'Indique ton prénom (coche-le ou écris-le).'; return; }
         if (!espaceVierge() && !confirm('La séance démarre sur un espace vierge : ton programme actuel sera remplacé.\nContinuer ?')) return;
-        demarrerSeance(def, eleves, g.nom);
+        demarrerSeance(def, eleves, g.nom, classe);
     });
 }
 
-function demarrerSeance(def, eleves, groupe) {
+function demarrerSeance(def, eleves, groupe, classe = null) {
     if (!moteur().activer(def, eleves, groupe)) return;
-    try { localStorage.setItem(CLE_ACTIVE, JSON.stringify({ def, eleves, groupe })); } catch (e) { /* stockage indisponible */ }
+    try { localStorage.setItem(CLE_ACTIVE, JSON.stringify({ def, eleves, groupe, classe })); } catch (e) { /* stockage indisponible */ }
+    lancerEnvoiAuto(classe);
     majMenu();
     fermer();
     if (def.mode === 'eval') moteur().evaluer(); else moteur().ouvrir();
+}
+
+// ---------------------------------------------------------------- ELEVE : mode classe (rejoindre, envoi automatique)
+function lancerEnvoiAuto(classe) {
+    classeActive = classe && classe.code ? classe : null;
+    clearInterval(minuteurEnvoi); minuteurEnvoi = null;
+    if (!classeActive) return;
+    minuteurEnvoi = setInterval(() => envoyerAuProf(false).catch(() => { /* nouvel essai au prochain tour */ }), ENVOI_AUTO_MS);
+    setTimeout(() => envoyerAuProf(false).catch(() => {}), 1500);     // le professeur voit l'eleve arriver tout de suite
+}
+async function envoyerAuProf(final) {
+    if (!classeActive || !moteur().active()) return null;
+    const t = window.exercicesTest && window.exercicesTest.etat();
+    const session = t && t.session;
+    const exercice = session ? (session.mode === 'tp' ? session.id : session.liste && session.liste[session.idx]) : '';
+    return appelClasse('/_classe/envoyer', { code: classeActive.code, rendu: moteur().rendu(), final, exercice: exercice || '' });
+}
+
+async function rejoindreClasse() {
+    const info = await infoClasse();
+    if (!info || !info.actif) { alert('Aucune séance n\'est diffusée dans la classe pour l\'instant.'); return; }
+    if (moteur().enEvaluation()) { alert('Une évaluation est en cours : termine-la d\'abord.'); return; }
+    const v = voile('<div class="ex-haut"><h2>🏫 ' + esc(info.titre) + '</h2><button class="ex-x" data-f="fermer" title="Fermer">✕</button></div>' +
+        '<p>' + esc(info.classe ? info.classe + ' · ' : '') + (info.mode === 'eval' ? 'évaluation' : 'entraînement') +
+        ' — séance diffusée par le poste de ton professeur.</p>' +
+        '<label class="se-libre">Code affiché au tableau <input id="se-code" type="text" maxlength="5" autocomplete="off" spellcheck="false" ' +
+        'style="text-transform:uppercase;font-size:22px;letter-spacing:4px;width:9em"></label>' +
+        '<p class="se-erreur" id="se-erreur" role="alert"></p>' +
+        '<div class="ex-boutons"><button class="ex-primaire" data-a="rejoindre">Rejoindre</button><button data-f="fermer">Plus tard</button></div>');
+    const champ = $('#se-code', v);
+    champ.focus();
+    const valider = async () => {
+        try {
+            const r = await appelClasse('/_classe/rejoindre', { code: champ.value.trim().toUpperCase() });
+            if (!espaceVierge() && !confirm('La séance démarre sur un espace vierge : ton programme actuel sera remplacé.\nContinuer ?')) return;
+            choisirEleves(r.seance, { code: r.code });
+        } catch (e) { $('#se-erreur', v).textContent = e.message === 'code incorrect' ? 'Code incorrect : vérifie-le au tableau.' : 'Impossible de rejoindre : ' + e.message; }
+    };
+    champ.addEventListener('keydown', ev => { if (ev.key === 'Enter') valider(); });
+    champ.addEventListener('input', () => { $('#se-erreur', v).textContent = ''; });
+    v.addEventListener('click', ev => {
+        if (ev.target.closest('[data-f="fermer"]')) fermer();
+        else if (ev.target.closest('[data-a="rejoindre"]')) valider();
+    });
 }
 
 function nomRendu(r) {
@@ -116,9 +188,22 @@ function nomRendu(r) {
         .filter(x => x && x !== 'x').join('_') + '.rendu.json';
 }
 
-window.seanceRendre = function () {
+window.seanceRendre = async function () {
     const r = moteur().rendu();
     if (!r) { alert('Aucune séance ouverte : ouvre d\'abord le fichier de séance donné par ton professeur (Fichier > Ouvrir une séance).'); return; }
+    if (classeActive) {
+        try {
+            const reponse = await envoyerAuProf(true);
+            voile('<div class="ex-haut"><h2>📤 Travail envoyé</h2><button class="ex-x" data-f="fermer" title="Fermer">✕</button></div>' +
+                '<p class="ex-ok">✔ Ton travail est arrivé sur le poste de ton professeur (' + esc(reponse.heure) + ').</p>' +
+                '<p class="ex-note">Tu peux continuer : ton travail est encore envoyé automatiquement, et « Rendre » à nouveau remplace l\'envoi précédent.</p>' +
+                '<div class="ex-boutons"><button class="ex-primaire" data-f="fermer">OK</button></div>')
+                .addEventListener('click', ev => { if (ev.target.closest('[data-f="fermer"]')) fermer(); });
+            return;
+        } catch (e) {
+            alert('Envoi au professeur impossible (' + e.message + ').\nTon travail va être téléchargé dans un fichier : donne-le à ton professeur.');
+        }
+    }
     const nom = nomRendu(r);
     telecharger(nom, JSON.stringify(r));
     const faits = r.exercices.filter(e => e.statut !== 'non fait').length;
@@ -135,6 +220,7 @@ window.seanceQuitter = function () {
     if (moteur().enEvaluation()) { alert('Une évaluation est en cours : termine-la d\'abord.'); return; }
     if (!confirm('Quitter la séance ? Pense à rendre ton travail avant.\n(Ton travail reste enregistré sur ce poste : rouvrir la séance permet de le retrouver.)')) return;
     moteur().quitter();
+    lancerEnvoiAuto(null);
     try { localStorage.removeItem(CLE_ACTIVE); } catch (e) { /* rien */ }
     majMenu();
     fermer();
@@ -177,13 +263,17 @@ function regleDepuisEspace() {
 
 async function fenetreEnseignant(onglet = 'creer') {
     if (moteur().active()) { alert('Une séance d\'élève est ouverte sur ce poste : quittez-la d\'abord (Fichier > Quitter la séance).'); return; }
+    const avecClasse = SUR_CE_PC && (await infoClasse()) !== null;
     const v = voile('<div class="ex-haut"><h2>👩‍🏫 Espace enseignant</h2><button class="ex-x" data-f="fermer" title="Fermer">✕</button></div>' +
-        '<div class="ex-onglets"><button data-onglet="creer">Préparer une séance</button><button data-onglet="ramasser">Ramasser les travaux</button></div>' +
+        '<div class="ex-onglets"><button data-onglet="creer">Préparer une séance</button><button data-onglet="ramasser">Ramasser les travaux</button>' +
+        (avecClasse ? '<button data-onglet="classe">🏫 Mode classe</button>' : '') + '</div>' +
         '<div id="se-contenu"></div>', 'se-fenetre');
     let courant = onglet;
     const montrer = async o => {
         courant = o;
         v.querySelectorAll('.ex-onglets button').forEach(b => b.classList.toggle('actif', b.dataset.onglet === o));
+        clearInterval(suiviClasse); suiviClasse = null;
+        if (o === 'classe') { await montrerClasse(v); return; }
         $('#se-contenu', v).innerHTML = o === 'creer' ? await htmlCreer() : htmlRamasser();
         if (o === 'creer') majMode(v);
     };
@@ -194,6 +284,7 @@ async function fenetreEnseignant(onglet = 'creer') {
         const a = ev.target.closest('[data-a]');
         if (!a) return;
         if (courant === 'creer') await actionCreer(a, v, () => montrer('creer'));
+        else if (courant === 'classe') await actionClasse(a, v, () => montrer('classe'));
         else await actionRamasser(a, v, () => montrer('ramasser'));
     });
     v.addEventListener('input', ev => {
@@ -315,24 +406,30 @@ async function actionCreer(a, v, rafraichir) {
                       perso: d.exercices.filter(e => /^P\d+$/.test(e.id)) };
         garderBrouillon(); rafraichir();
     } else if (act === 'telecharger') {
-        const erreur = $('#se-erreur', v), groupes = lireGroupes(brouillon.groupes);
-        const b = await chargerBanque();
-        const parId = {}; for (const n of b.niveaux || []) for (const e of n.exercices) parId[e.id] = e;
-        const exercices = brouillon.choisis.filter(id => parId[id]).map(id => Object.assign({ points: 1 }, parId[id])).concat(brouillon.perso);
-        if (!brouillon.titre) { erreur.textContent = 'Donnez un titre à la séance.'; return; }
-        if (!groupes.length) { erreur.textContent = 'Indiquez au moins un groupe.'; return; }
-        if (!exercices.length) { erreur.textContent = 'Choisissez au moins un exercice.'; return; }
+        const erreur = $('#se-erreur', v);
+        const def = await construireSeance();
+        if (typeof def === 'string') { erreur.textContent = def; return; }
         erreur.textContent = '';
-        const def = { format: 'seance-microbit', version: 1,
-                      id: brouillon.id || (Date.now().toString(36) + Math.random().toString(36).slice(2, 7)),
-                      titre: brouillon.titre, classe: brouillon.classe, mode: brouillon.mode,
-                      minutes: brouillon.mode === 'eval' ? brouillon.minutes : 0, creee: new Date().toISOString(), groupes, exercices };
-        // Meme identifiant pour une seance modifiee puis retelechargee : les eleves retrouvent leur travail.
-        brouillon.id = def.id; garderBrouillon();
         const nom = ['seance', morceau(def.classe), morceau(def.titre)].filter(x => x && x !== 'x').join('_') + '.json';
         telecharger(nom, JSON.stringify(def, null, 1));
         alert('Séance téléchargée : « ' + nom + ' ».\nDéposez-la sur l\'ENT ; les élèves l\'ouvrent avec « Fichier > Ouvrir une séance ».');
     }
+}
+
+/** La seance en preparation, prete a telecharger ou a diffuser ; un texte d'erreur si elle est incomplete. */
+async function construireSeance() {
+    const groupes = lireGroupes(brouillon.groupes);
+    const b = await chargerBanque();
+    const parId = {}; for (const n of b.niveaux || []) for (const e of n.exercices) parId[e.id] = e;
+    const exercices = brouillon.choisis.filter(id => parId[id]).map(id => Object.assign({ points: 1 }, parId[id])).concat(brouillon.perso);
+    if (!brouillon.titre) return 'Donnez un titre à la séance.';
+    if (!groupes.length) return 'Indiquez au moins un groupe.';
+    if (!exercices.length) return 'Choisissez au moins un exercice.';
+    // Meme identifiant pour une seance modifiee puis retelechargee : les eleves retrouvent leur travail.
+    brouillon.id = brouillon.id || (Date.now().toString(36) + Math.random().toString(36).slice(2, 7));
+    garderBrouillon();
+    return { format: 'seance-microbit', version: 1, id: brouillon.id, titre: brouillon.titre, classe: brouillon.classe, mode: brouillon.mode,
+             minutes: brouillon.mode === 'eval' ? brouillon.minutes : 0, creee: new Date().toISOString(), groupes, exercices };
 }
 
 // ---------------------------------------------------------------- ENSEIGNANT : ramasser les travaux
@@ -442,12 +539,154 @@ async function actionRamasser(a, v, rafraichir) {
     }
 }
 
+// ---------------------------------------------------------------- ENSEIGNANT : mode classe (diffusion et suivi en direct)
+let suiviClasse = null, seanceAOuvrir = null;
+const urlEleves = adresse => 'http://' + adresse + (location.port ? ':' + location.port : '');
+
+async function montrerClasse(v) {
+    const zone = $('#se-contenu', v);
+    let e;
+    try { e = await appelClasse('/_classe/etat'); } catch (err) { zone.innerHTML = '<p class="se-erreur">Serveur injoignable : ' + esc(err.message) + '</p>'; return; }
+    if (!e.actif) {
+        const def = await construireSeance();
+        zone.innerHTML = '<p>Le mode classe diffuse une séance aux élèves <b>de la salle</b> : ils ouvrent l\'adresse de ce poste, saisissent un code, ' +
+            'et leur travail arrive automatiquement sur ce poste (toutes les 20 secondes, et quand ils cliquent « Rendre »). Ce poste et ' +
+            'ceux des élèves doivent être sur le même réseau ; ce poste doit rester allumé et l\'application ouverte pendant la séance.</p>' +
+            '<h3>Séance à diffuser</h3>' +
+            (seanceAOuvrir ? '<p>Fichier ouvert : <b>' + esc(seanceAOuvrir.titre) + '</b> (' + esc(seanceAOuvrir.classe || '') + ', ' + seanceAOuvrir.exercices.length + ' exercices)</p>'
+                : typeof def === 'string' ? '<p class="ex-note">La séance en préparation est incomplète (' + esc(def) + ') : complétez-la dans l\'onglet ' +
+                    '« Préparer une séance », ou ouvrez un fichier de séance.</p>'
+                : '<p>Séance en préparation : <b>' + esc(def.titre) + '</b> (' + esc(def.classe) + ', ' + def.exercices.length + ' exercices, ' +
+                    def.groupes.length + ' groupes, ' + (def.mode === 'eval' ? 'évaluation' : 'entraînement') + ')</p>') +
+            '<p class="se-erreur" id="se-erreur" role="alert"></p>' +
+            '<div class="ex-boutons"><button class="ex-primaire" data-a="demarrer"' + (seanceAOuvrir || typeof def !== 'string' ? '' : ' disabled') + '>▶ Démarrer le mode classe</button>' +
+            '<button data-a="ouvrir-classe">Ouvrir un fichier de séance…</button>' + (seanceAOuvrir ? '<button data-a="oublier">Utiliser la séance en préparation</button>' : '') + '</div>' +
+            '<p class="ex-note">À la première diffusion, Windows peut demander d\'autoriser l\'application sur le réseau (pare-feu) : acceptez pour les ' +
+            'réseaux privés. Si les élèves n\'arrivent pas à se connecter, l\'administrateur réseau doit autoriser le port ' + esc(location.port || '80') + '.</p>';
+        return;
+    }
+    const adresses = e.adresses.length ? e.adresses : ['(aucune adresse réseau trouvée : ce poste est-il connecté ?)'];
+    zone.innerHTML = '<div class="se-diffusion"><div><div class="ex-note">Les élèves ouvrent dans leur navigateur :</div>' +
+        adresses.map(a => '<div class="se-adresse">' + esc(e.adresses.length ? urlEleves(a) : a) + '</div>').join('') +
+        '<div class="ex-note">puis saisissent le code :</div><div class="se-code">' + esc(e.code) + '</div></div>' +
+        '<canvas id="se-qr" width="150" height="150" title="QR code de l\'adresse (tablettes)"></canvas></div>' +
+        '<p><b>' + esc(e.seance.titre) + '</b> · ' + esc(e.seance.classe || '') + ' · ' + (e.seance.mode === 'eval' ? 'évaluation' : 'entraînement') +
+        ' · travaux enregistrés dans <code>' + esc(e.dossier) + '</code></p>' +
+        '<div id="se-suivi"></div>' +
+        '<div class="ex-boutons ex-noprint"><button data-a="dossier">📁 Ouvrir le dossier des travaux</button><button data-a="csv-classe">Exporter (CSV)</button>' +
+        '<button data-a="imprimer">🖨 Imprimer</button><button class="ex-danger" data-a="arreter">■ Arrêter le mode classe</button></div>';
+    dessinerQr(e.adresses.length ? urlEleves(e.adresses[0]) : '');
+    afficherSuivi(e, v);
+    suiviClasse = setInterval(async () => {
+        if (!document.body.contains(v)) { clearInterval(suiviClasse); suiviClasse = null; return; }
+        try { afficherSuivi(await appelClasse('/_classe/etat'), v); } catch (err) { /* serveur occupe : on reessaie */ }
+    }, 3000);
+}
+
+let dernierEtat = null;
+function afficherSuivi(e, v) {
+    dernierEtat = e;
+    const zone = $('#se-suivi', v);
+    if (!zone || !e.actif) return;
+    const exos = e.seance.exercices;
+    const enLigne = e.groupes.filter(g => g.en_ligne).length, rendus = e.groupes.filter(g => g.final).length;
+    let h = '<h3>Suivi en direct <small>' + e.groupes.length + ' groupe' + (e.groupes.length > 1 ? 's' : '') + ' · ' + enLigne + ' connecté' + (enLigne > 1 ? 's' : '') +
+        ' · ' + rendus + ' rendu' + (rendus > 1 ? 's' : '') + ' définitif' + (rendus > 1 ? 's' : '') + '</small></h3>';
+    if (!e.groupes.length) { zone.innerHTML = h + '<p class="ex-note">Personne n\'a encore rejoint la séance.</p>'; return; }
+    h += '<div class="ex-defile"><table class="ex-table ex-classe se-table"><tr><th></th><th>Groupe</th><th>Élève(s)</th><th>En cours</th>' +
+        exos.map(x => '<th title="' + esc(x.titre) + '">' + esc(x.id) + '</th>').join('') + '<th>Réussis</th>' + (e.seance.mode === 'eval' ? '<th>Note /20</th>' : '') +
+        '<th>Rendu</th></tr>';
+    e.groupes.forEach((g, k) => {
+        const reussis = g.exercices.filter(x => x.statut === 'réussi').length;
+        h += '<tr><td title="' + (g.en_ligne ? 'connecté' : 'pas de nouvelles depuis ' + g.depuis_s + ' s') + '">' + (g.en_ligne ? '🟢' : '⚪') + '</td>' +
+            '<td>' + esc(g.groupe) + '</td><td>' + esc(g.eleves.join(', ')) + '</td><td>' + esc(g.exercice || '—') + '</td>' +
+            g.exercices.map((x, j) => '<td><button class="se-cell" data-a="voir-classe" data-g="' + k + '" data-e="' + j + '" title="Ouvrir le programme : ' +
+                esc(x.titre) + ' (' + esc(x.statut) + ')">' + esc(cellule(x)) + '</button></td>').join('') +
+            '<td>' + reussis + '/' + g.exercices.length + '</td>' + (e.seance.mode === 'eval' ? '<td><b>' + (g.evaluation ? g.evaluation.note : '—') + '</b></td>' : '') +
+            '<td>' + (g.final ? '✔ ' + esc(new Date(g.rendu_le * 1000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })) : '—') + '</td></tr>';
+    });
+    zone.innerHTML = h + '</table></div><p class="ex-note">🟢 connecté · ⚪ pas de nouvelles depuis plus de 45 s · ✔ réussi (★ étoiles) · ✎ à corriger · … commencé · ' +
+        '↷ passé · ✘ échec · · non fait. Le travail est enregistré même sans « Rendre » (envoi automatique).</p>';
+}
+
+async function dessinerQr(texte) {
+    const toile = document.getElementById('se-qr');
+    if (!toile || !texte) { if (toile) toile.remove(); return; }
+    try {
+        if (!window.ZXing) await new Promise((ok, ko) => { const sc = document.createElement('script'); sc.src = 'lib/zxing/zxing-0.21.3.min.js'; sc.onload = ok; sc.onerror = ko; document.head.appendChild(sc); });
+        const Z = window.ZXing;
+        const m = new Z.QRCodeWriter().encode(texte, Z.BarcodeFormat.QR_CODE, 0, 0, new Map([[Z.EncodeHintType.MARGIN, 2]]));
+        const n = m.getWidth(), pas = Math.floor(150 / n), ctx = toile.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 150, 150); ctx.fillStyle = '#000';
+        const dec = Math.floor((150 - n * pas) / 2);
+        for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (m.get(x, y)) ctx.fillRect(dec + x * pas, dec + y * pas, pas, pas);
+    } catch (err) { toile.remove(); }
+}
+
+async function actionClasse(a, v, rafraichir) {
+    const act = a.dataset.a;
+    if (act === 'ouvrir-classe') {
+        const [f] = await choisirFichiers('.json,application/json', false);
+        if (!f) return;
+        let d; try { d = JSON.parse(await lireTexte(f)); } catch (err) { d = null; }
+        if (!d || d.format !== 'seance-microbit') { alert('Ce fichier n\'est pas une séance.'); return; }
+        seanceAOuvrir = d; rafraichir();
+    } else if (act === 'oublier') {
+        seanceAOuvrir = null; rafraichir();
+    } else if (act === 'demarrer') {
+        const def = seanceAOuvrir || await construireSeance();
+        if (typeof def === 'string') { $('#se-erreur', v).textContent = def; return; }
+        try { await appelClasse('/_classe/demarrer', { seance: def }); rafraichir(); }
+        catch (err) { $('#se-erreur', v).textContent = 'Démarrage impossible : ' + err.message; }
+    } else if (act === 'arreter') {
+        if (!confirm('Arrêter le mode classe ? Les élèves ne pourront plus envoyer leur travail (ce qui est déjà arrivé reste dans le dossier des travaux).')) return;
+        await appelClasse('/_classe/arreter', {}); rafraichir();
+    } else if (act === 'dossier') {
+        try { await appelClasse('/_classe/dossier', {}); } catch (err) { alert('Ouverture impossible : ' + err.message); }
+    } else if (act === 'imprimer') {
+        window.print();
+    } else if (act === 'csv-classe' || act === 'voir-classe') {
+        if (!dernierEtat || !dernierEtat.actif) return;
+        if (act === 'csv-classe') {
+            // Meme export que le ramassage par fichiers, a partir des travaux recus.
+            const complets = [];
+            for (const g of dernierEtat.groupes) { try { complets.push(await appelClasse('/_classe/rendu?cle=' + encodeURIComponent(g.cle))); } catch (err) { /* ignore */ } }
+            const garde = rendus; rendus = complets;
+            const texte = csvRendus(); rendus = garde;
+            const a2 = document.createElement('a');
+            a2.href = URL.createObjectURL(new Blob([texte], { type: 'text/csv;charset=utf-8' }));
+            a2.download = 'mode_classe_' + morceau(dernierEtat.seance.titre) + '.csv';
+            document.body.appendChild(a2); a2.click(); a2.remove();
+            return;
+        }
+        const g = dernierEtat.groupes[Number(a.dataset.g)];
+        if (!g) return;
+        let r; try { r = await appelClasse('/_classe/rendu?cle=' + encodeURIComponent(g.cle)); } catch (err) { alert(err.message); return; }
+        const e = r.exercices[Number(a.dataset.e)];
+        if (!e || !e.blocs) { alert('Pas encore de programme pour cet exercice.'); return; }
+        if (!espaceVierge() && !confirm('Ouvrir le programme de ' + r.eleves.join(', ') + ' remplace le programme de l\'éditeur.\nContinuer ?')) return;
+        Blockly.serialization.workspaces.load(e.blocs, window.workspace);
+        const champ = $('#nom-fichier');
+        if (champ) { champ.value = morceau(r.groupe) + '_' + r.eleves.map(morceau).join('-') + '_' + morceau(e.id); champ.dispatchEvent(new Event('input')); }
+        fermer();
+    }
+}
+
 // ---------------------------------------------------------------- menu Fichier et reprise au chargement
 function majMenu() {
     const active = moteur() && moteur().active();
     const rendre = $('#seance-rendre-btn'), quitter = $('#seance-quitter-btn');
     if (rendre) rendre.disabled = !active;
     if (quitter) quitter.hidden = !active;
+}
+// Poste d'eleve : « Rejoindre la seance de la classe » apparait (et se propose) quand une seance est diffusee.
+async function verifierClasse() {
+    const bouton = $('#seance-rejoindre-btn');
+    if (SUR_CE_PC) { if (bouton) bouton.hidden = true; return; }
+    const info = await infoClasse();
+    const diffusee = !!(info && info.actif);
+    if (bouton) bouton.hidden = !diffusee;
+    if (diffusee && !moteur().active()) rejoindreClasse();
 }
 
 const style = document.createElement('style');
@@ -470,6 +709,13 @@ style.textContent = `
 .se-depot:hover { background: rgba(255, 85, 1, .08); }
 #ex-voile .se-cell { padding: 2px 6px; font-size: 12px; white-space: nowrap; }
 .se-table td { white-space: nowrap; }
+.se-diffusion { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; margin: 10px 0; padding: 12px 16px;
+  border: 2px solid #ff5501; border-radius: 10px; background: rgba(255, 85, 1, .08); }
+.se-adresse { font-family: Consolas, monospace; font-size: 24px; font-weight: 700; color: #ff7a33; margin: 2px 0 8px; }
+.se-code { font-family: Consolas, monospace; font-size: 40px; font-weight: 700; letter-spacing: 8px; color: #fff; background: #04070b;
+  border-radius: 8px; padding: 2px 14px; display: inline-block; }
+:root[data-theme="light"] .se-code { color: #04070b; background: #fff; border: 2px solid #04070b; }
+#se-qr { background: #fff; border-radius: 6px; }
 `;
 document.head.appendChild(style);
 
@@ -479,14 +725,16 @@ function brancher() {
     lier('seance-rendre-btn', () => window.seanceRendre());
     lier('seance-quitter-btn', () => window.seanceQuitter());
     lier('seance-enseignant-btn', () => fenetreEnseignant('creer'));
+    lier('seance-rejoindre-btn', rejoindreClasse);
     // Reprise apres un rechargement de la page : la seance reste ouverte, le travail aussi.
     try {
         const a = JSON.parse(localStorage.getItem(CLE_ACTIVE) || 'null');
-        if (a && a.def && a.eleves && moteur()) moteur().activer(a.def, a.eleves, a.groupe);
+        if (a && a.def && a.eleves && moteur()) { moteur().activer(a.def, a.eleves, a.groupe); lancerEnvoiAuto(a.classe); }
     } catch (e) { /* rien a reprendre */ }
     majMenu();
+    verifierClasse();
 }
 brancher();
 
-window.seancesTest = { lireGroupes, regleDepuisEspace, demarrerSeance, ajouterRendus, csvRendus, nomRendu, fenetreEnseignant,
+window.seancesTest = { construireSeance, envoyerAuProf, rejoindreClasse, infoClasse, SUR_CE_PC, lireGroupes, regleDepuisEspace, demarrerSeance, ajouterRendus, csvRendus, nomRendu, fenetreEnseignant,
                        rendus: () => rendus, brouillon: () => brouillon, htmlRamasser };

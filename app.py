@@ -18,6 +18,8 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
+import classe      # mode classe : seance servie aux eleves de la salle (classe.py)
+
 PORT = 8000
 # Numero de version : a tenir identique dans version_info.txt (proprietes de
 # l'exe), app.spec (nom du fichier) et le texte de #copyright-toolbar (index.html).
@@ -97,6 +99,9 @@ class Serveur(socketserver.ThreadingMixIn, socketserver.TCPServer):
     # jamais. Windows rebinde de toute facon un port en TIME_WAIT sans elle.
     allow_reuse_address = os.name != "nt"
     daemon_threads = True
+    # Mode classe : une trentaine de postes chargent la page en meme temps (une vingtaine de fichiers chacun).
+    # La file d'attente par defaut (5 connexions) deborderait : Windows couperait des connexions.
+    request_queue_size = 128
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -152,12 +157,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return False
 
     def do_GET(self):
-        if not self._traiter_interne():
+        if not self._traiter_interne() and not classe.traiter(self, "GET"):
             super().do_GET()
 
     def do_POST(self):
-        # navigator.sendBeacon envoie un POST.
-        if not self._traiter_interne():
+        # navigator.sendBeacon envoie un POST ; le mode classe recoit les travaux des eleves en POST.
+        if not self._traiter_interne() and not classe.traiter(self, "POST"):
             self.send_error(405)
 
     def log_message(self, format, *args):
@@ -189,7 +194,8 @@ def surveiller(httpd):
             vide = not _pages
             deja_vu = _etat["vu"]
             dernier = _etat["dernier"]
-        if not vide:
+        # Mode classe : le serveur sert les eleves, il ne s'arrete pas quand la page du professeur se ferme.
+        if not vide or classe.actif():
             vide_depuis = None
             continue
         if vide_depuis is None:

@@ -1554,3 +1554,38 @@ ENSEIGNANT — Fichier > Espace enseignant > Ramasser les travaux
 - Export CSV (une ligne par eleve : un binome donne deux lignes), impression.
 Limite : un poste partage par plusieurs classes garde le travail de chacun separement (par seance), mais tout eleve du
 poste peut ouvrir la meme seance avec un autre prenom : la confiance reste de mise (pas d'authentification).
+
+43. MODE CLASSE : LA SEANCE SERVIE PAR LE PC DU PROFESSEUR (solution 2, oct. 2026)
+Dossier : blockly_ts_mode_classe (copie Git du projet blockly_ts_adacraft_vilain, qui reste sans mode classe).
+Le PC du professeur fait tourner l'application (lancer_projet.bat, ou l'exe) et sert la seance aux postes de la salle :
+plus de fichier a deposer sur l'ENT, les travaux arrivent tout seuls. Fichiers : classe.py (serveur), app.py (branchement),
+seances.js (fenetres). La solution 1 (fichiers par l'ENT) reste disponible a l'identique.
+
+PROFESSEUR (sur son PC) — Fichier > Espace enseignant > Mode classe
+- Choisir la seance : celle en preparation (onglet « Preparer une seance ») ou un fichier de seance ; « Demarrer le mode classe ».
+- L'ecran affiche l'adresse a ouvrir sur les postes eleves (http://<adresse du PC>:8000), un code de 5 caracteres (a ecrire
+  au tableau) et un QR code de l'adresse (tablettes).
+- Suivi en direct (toutes les 3 s) : connecte (vert) ou non, groupe, eleves, exercice en cours, etat de chaque exercice,
+  reussis, note (evaluation), rendu definitif et son heure. Un clic sur une case ouvre le programme de l'eleve.
+- Les travaux sont enregistres sur le PC dans Documents\MicrobitBlockly\travaux\<date>_<classe>_<titre>\ : un fichier
+  .rendu.json par groupe (meme format que la solution 1 : « Ramasser les travaux » sait les relire), toujours le plus recent.
+  Boutons : ouvrir ce dossier, export CSV (une ligne par eleve), imprimer, arreter le mode classe.
+- Tant que le mode classe est actif, l'exe ne s'arrete pas tout seul quand la page du professeur se ferme.
+
+ELEVE (autre poste de la salle) — ouvrir l'adresse affichee
+- La fenetre « Rejoindre » s'ouvre toute seule (sinon Fichier > Rejoindre la seance de la classe) : code, puis groupe et
+  prenom(s), comme en solution 1.
+- Le travail est envoye au PC du professeur toutes les 20 secondes ; « Rendre mon travail » l'envoie comme rendu definitif
+  (« Travail envoye ✔ hh:mm »). Si le reseau ne repond pas, le travail est telecharge dans un fichier, a donner au professeur.
+
+SECURITE ET RESEAU
+- Les fonctions du professeur (demarrer, suivre, ouvrir les travaux, arreter) ne repondent qu'au PC lui-meme (127.0.0.1) :
+  un poste eleve recoit « reserve au poste de l'enseignant ». Les eleves doivent donner le code ; un travail d'une autre seance,
+  mal forme ou trop gros (plus de 3 Mo) est refuse. Aucun mot de passe : le code suffit pour la duree de la seance.
+- Le PC et les postes eleves doivent etre sur le meme reseau. A la premiere diffusion, Windows peut demander d'autoriser
+  Python (ou l'exe) sur le reseau : accepter pour les reseaux prives. Si les eleves n'arrivent pas a se connecter : pare-feu
+  (port 8000), isolement des clients sur le Wi-Fi, ou reseau eleves separe du reseau professeurs -> administrateur reseau.
+- Le serveur accepte 128 connexions en attente (au lieu de 5) : une classe entiere charge la page en meme temps.
+- Une trentaine de postes chargent chacun environ 5 Mo au demarrage (Blockly, Brython) : quelques secondes sur le reseau
+  de la salle. MediaPipe (27 Mo) ne se charge que si l'eleve utilise l'apprentissage immediat.
+A verifier en classe : le pare-feu et le reseau de l'etablissement, et la charge avec 30 postes reels.
