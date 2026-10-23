@@ -858,7 +858,7 @@ function brancher() {
     // Reprise apres un rechargement de la page : la seance reste ouverte, le travail aussi.
     try {
         const a = JSON.parse(localStorage.getItem(CLE_ACTIVE) || 'null');
-        if (a && a.def && a.eleves && moteur()) { moteur().activer(a.def, a.eleves, a.groupe); lancerEnvoiAuto(a.classe); }
+        if (a && a.def && a.eleves && moteur()) { moteur().activer(a.def, a.eleves, a.groupe); lancerEnvoiAuto(a.classe); moteur().reprendreEvaluation(); }
     } catch (e) { /* rien a reprendre */ }
     majMenu();
     verifierClasse();
