@@ -3431,13 +3431,13 @@ Ramassage : dédoublonnage par (séance, groupe, élèves) en gardant la date la
 **PIÈGE nº 79 — séance active et rechargement** : la séance ouverte est rangée dans `seance_active_v1` et réactivée au
 chargement, sinon l'élève qui actualise la page perd le fil (son travail, lui, est sous la clé propre à la séance).
 
-## 30. Mode classe (`classe.py`, dossier `blockly_ts_mode_classe`)
+## 30. Mode classe (`classe.py`, dossier `easybloc_ts_mode_classe`)
 
 Le serveur d'`app.py` écoute déjà sur toutes les interfaces (`("", port)`) : `classe.py` ajoute `/_classe/*` (aiguillage
 `classe.traiter(handler, méthode)` dans `do_GET` / `do_POST`). Élèves : `info` (jamais le code), `rejoindre` {code} → séance,
 `envoyer` {code, rendu, final, exercice}. Enseignant, **refusé hors de 127.0.0.1 / ::1** : `demarrer` {séance} → code
 (5 caractères sans O/0/I/1/L), adresses IPv4 (route par défaut via un `connect` UDP sans envoi), dossier ; `arreter`, `etat`,
-`rendu?cle=`, `dossier` (`os.startfile`). Travaux : `Documents\MicrobitBlockly\travaux\<date>_<classe>_<titre>\<groupe>_<élèves>.rendu.json`,
+`rendu?cle=`, `dossier` (`os.startfile`). Travaux : `Documents\MicrobitEasybloc\travaux\<date>_<classe>_<titre>\<groupe>_<élèves>.rendu.json`,
 réécrit à chaque envoi. `surveiller` ne coupe pas l'exe tant que `classe.actif()`. Navigateur (`seances.js`) : `SUR_CE_PC`
 (hôte localhost, sauf `?eleve`) décide entre l'onglet « Mode classe » et « Rejoindre » ; envoi automatique toutes les 20 s,
 `seanceRendre` envoie `final: true` et retombe sur le téléchargement si le réseau échoue ; la séance active garde le code

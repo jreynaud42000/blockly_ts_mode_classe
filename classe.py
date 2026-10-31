@@ -18,7 +18,7 @@ Ce module ajoute les adresses /_classe/... :
 
 En evaluation, la banque d'exercices (/exercices.json, avec ses solutions) n'est plus servie aux postes eleves.
 
-Les travaux sont ecrits dans Documents\\MicrobitBlockly\\travaux\\<date>_<classe>_<titre>\\, un fichier
+Les travaux sont ecrits dans Documents\\MicrobitEasybloc\\travaux\\<date>_<classe>_<titre>\\, un fichier
 « .rendu.json » par groupe d'eleves (le meme format que les fichiers rendus par l'ENT, seances.js), remplace a
 chaque envoi : le dossier contient toujours le dernier etat de chaque groupe.
 """
@@ -55,7 +55,16 @@ def _cle(groupe, eleves):
 
 
 def dossier_racine():
-    return os.path.join(os.path.expanduser("~"), "Documents", "MicrobitBlockly", "travaux")
+    documents = os.path.join(os.path.expanduser("~"), "Documents")
+    nouveau, ancien = os.path.join(documents, "MicrobitEasybloc"), os.path.join(documents, "MicrobitBlockly")
+    # Nom Easybloc (31 oct. 2026) : le dossier des travaux deja rendus est deplace une fois sous le nouveau nom ;
+    # s'il est occupe (ouvert dans l'Explorateur), on continue dans l'ancien.
+    if os.path.isdir(ancien) and not os.path.exists(nouveau):
+        try:
+            os.rename(ancien, nouveau)
+        except OSError:
+            return os.path.join(ancien, "travaux")
+    return os.path.join(nouveau, "travaux")
 
 
 def adresses_locales():
